@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""
+BBot Control - 100Hz Request-Response Pattern
+Sends motor command, waits for IMU response, logs to HDF5
+Simple camera integration - no threads, just grab frames when available
+"""
+
+import pygame
+import serial
+import struct
+import time
+import cv2
+import h5py
+import numpy as np
+import os
+from datetime import datetime
+
+# ===== CONFIGURATION =====
+PORT = 'COM7'
+BAUDRATE = 460800
+HERTZ = 100  # Easy to change!
+LOOP_INTERVAL = 1.0 / HERTZ
+
+# Packet markers
+PKT_START = 0xAA
+PKT_END = 0x55
+
+# Recording folder
+RECORDINGS_FOLDER = r"C:\Users\aidan\Documents\AAA Research\AAA Big Tank\Recordings"
+os.makedirs(RECORDINGS_FOLDER, exist_ok=True)
+
+# ===== HELPER FUNCTIONS =====
+def get_new_filename(folder, base_name, extension):
+    """Generate unique filename in folder"""
+    index = 1
+    while True:
+        new_filename = os.path.join(folder, f"{base_name}_{index}{extension}")
+        if not os.path.exists(new_filename):
+            return new_filename
+        index += 1
+
+# ===== CAMERA SETUP (GLOBAL) =====
+cap = cv2.VideoCapture(1)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+
+# Get camera properties
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+if fps == 0:
+    fps = 30
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+print(f"Camera: {width}x{height} at {fps}fps")
+
+# Video writer (will be created when recording starts)
+video_out = None
+current_video_path = None
+
+# ===== SERIAL COMMUNICATION =====
+class SerialComm:
+    def __init__(self, port, baudrate):
+        self.ser = serial.Serial(port, baudrate, timeout=0.001)
+        self.ser.reset_input_buffer()
+        self.ser.reset_output_buffer()
+        self.read_buffer = b''
+        time.sleep(1)
+        print(f"Serial connected at {baudrate} baud")
+    
+    def send_motor_command(self, left, right):
+        """Send framed motor command: [START][4 data][END]"""
+        left = max(min(int(left), 32767), -32768)
+        right = max(min(int(right), 32767), -32768)
+        
+        packet = bytearray(6)
+        packet[0] = PKT_START
+        packet[1:3] = struct.pack('>h', left)   # Big-endian
+        packet[3:5] = struct.pack('>h', right)
+        packet[5] = PKT_END
+        
+        self.ser.write(packet)
+    
+    def read_imu_packet(self, timeout_ms=8):
+        """Wait for and read a complete IMU packet"""
+        end_time = time.time() + (timeout_ms / 1000.0)
+        
+        while time.time() < end_time:
+            # Add incoming data to buffer
+            if self.ser.in_waiting:
+                self.read_buffer += self.ser.read(self.ser.in_waiting)
+            
+            # Look for start marker
+            start_idx = self.read_buffer.find(bytes([PKT_START]))
+            if start_idx >= 0 and len(self.read_buffer) >= start_idx + 32:
+                packet = self.read_buffer[start_idx:start_idx + 32]
+                
+                # Check end marker
+                if packet[31] == PKT_END:
+                    # Extract 30 bytes of data
+                    data = packet[1:31]
+                    try:
+                        ts, = struct.unpack('<Q', data[0:8])
+                        accel = struct.unpack('<3h', data[8:14])
+                        gyro = struct.unpack('<3h', data[14:20])
+                        mag = struct.unpack('<3h', data[20:26])
+                        motors = struct.unpack('<hh', data[26:30])
+                        
+                        # Remove packet from buffer
+                        self.read_buffer = self.read_buffer[start_idx + 32:]
+                        return ts, accel, gyro, mag, motors
+                    except:
+                        # Bad data, remove first byte and try again
+                        self.read_buffer = self.read_buffer[1:]
+                else:
+                    # Bad end marker, remove first byte
+                    self.read_buffer = self.read_buffer[1:]
+            elif start_idx < 0 and len(self.read_buffer) > 64:
+                # No marker found, keep buffer small
+                self.read_buffer = self.read_buffer[-64:]
+            
+            # Small delay to prevent CPU spinning
+            time.sleep(0.0001)
+        
+        return None  # Timeout
+    
+    def clear_buffer(self):
+        """Clear any stale data"""
+        self.ser.reset_input_buffer()
+        self.read_buffer = b''
+    
+    def close(self):
+        self.ser.close()
+
+# ===== HDF5 RECORDER =====
+class HDF5Recorder:
+    def __init__(self, session_folder):
+        self.h5_path = os.path.join(session_folder, "imu_data.h5")
+        self.h5_file = h5py.File(self.h5_path, 'w')
+        
+        # Create datasets
+        self.ts_dset = self.h5_file.create_dataset(
+            'timestamp', (0,), maxshape=(None,),
+            dtype='uint64', chunks=True, compression='gzip'
+        )
+        self.accel_dset = self.h5_file.create_dataset(
+            'accel', (0, 3), maxshape=(None, 3),
+            dtype='int16', chunks=True, compression='gzip'
+        )
+        self.gyro_dset = self.h5_file.create_dataset(
+            'gyro', (0, 3), maxshape=(None, 3),
+            dtype='int16', chunks=True, compression='gzip'
+        )
+        self.mag_dset = self.h5_file.create_dataset(
+            'mag', (0, 3), maxshape=(None, 3),
+            dtype='int16', chunks=True, compression='gzip'
+        )
+        self.motor_dset = self.h5_file.create_dataset(
+            'motors', (0, 2), maxshape=(None, 2),
+            dtype='int16', chunks=True, compression='gzip'
+        )
+        self.frame_flag_dset = self.h5_file.create_dataset(
+            'frame_captured', (0,), maxshape=(None,),
+            dtype='bool', chunks=True, compression='gzip'
+        )
+        self.frame_num_dset = self.h5_file.create_dataset(
+            'frame_number', (0,), maxshape=(None,),
+            dtype='int32', chunks=True, compression='gzip'
+        )
+        
+        # Metadata
+        self.h5_file.attrs['start_time'] = time.time()
+        self.h5_file.attrs['sample_rate_hz'] = HERTZ
+        self.h5_file.attrs['camera_fps'] = fps
+        
+        self.sample_count = 0
+    
+    def append(self, ts, accel, gyro, mag, motors, frame_captured, frame_num):
+        """Add one sample"""
+        idx = self.sample_count
+        
+        # Resize datasets
+        self.ts_dset.resize((idx + 1,))
+        self.accel_dset.resize((idx + 1, 3))
+        self.gyro_dset.resize((idx + 1, 3))
+        self.mag_dset.resize((idx + 1, 3))
+        self.motor_dset.resize((idx + 1, 2))
+        self.frame_flag_dset.resize((idx + 1,))
+        self.frame_num_dset.resize((idx + 1,))
+        
+        # Write data
+        self.ts_dset[idx] = ts
+        self.accel_dset[idx] = accel
+        self.gyro_dset[idx] = gyro
+        self.mag_dset[idx] = mag
+        self.motor_dset[idx] = motors
+        self.frame_flag_dset[idx] = frame_captured
+        self.frame_num_dset[idx] = frame_num if frame_captured else -1
+        
+        self.sample_count += 1
+    
+    def close(self):
+        """Just close - no conversion"""
+        self.h5_file.attrs['end_time'] = time.time()
+        self.h5_file.attrs['sample_count'] = self.sample_count
+        self.h5_file.close()
+        print(f"\nHDF5 saved: {self.h5_path} ({self.sample_count} samples)")
+
+# ===== JOYSTICK CONTROL =====
+class JoystickControl:
+    def __init__(self):
+        pygame.init()
+        pygame.joystick.init()
+        
+        if pygame.joystick.get_count() == 0:
+            raise Exception("No joystick found")
+        
+        self.joystick = pygame.joystick.Joystick(0)
+        self.joystick.init()
+        print(f"Controller: {self.joystick.get_name()}")
+        
+        # Motor state
+        self.left_pwm = 0
+        self.right_pwm = 0
+        self.power = 50
+        self.polarity = 1
+        self.recording = False
+        self.running = True
+        
+        # Recording objects
+        self.h5_recorder = None
+        self.session_folder = None
+    
+    def update(self):
+        """Process joystick events and calculate motor values"""
+        for event in pygame.event.get():
+            if event.type == pygame.JOYBUTTONDOWN:
+                self.handle_button(event)
+        
+        pygame.event.pump()
+        
+        # Tank drive
+        threshold = 0.1
+        left_y = self.joystick.get_axis(1) * self.polarity
+        right_y = self.joystick.get_axis(3) * self.polarity
+        
+        # Deadzone
+        if abs(left_y) < threshold:
+            left_y = 0
+        if abs(right_y) < threshold:
+            right_y = 0
+        
+        # Scale to PWM
+        self.left_pwm = int(left_y * 255 * self.power / 100)
+        self.right_pwm = int(right_y * 255 * self.power / 100)
+        
+        return self.left_pwm, self.right_pwm
+    
+    def handle_button(self, event):
+        global video_out, current_video_path
+        
+        # LB - decrease power
+        if event.button == 4:
+            self.power = max(0, self.power - 10)
+            print(f"\nPower: {self.power}%")
+        
+        # RB - increase power
+        elif event.button == 5:
+            self.power = min(100, self.power + 10)
+            print(f"\nPower: {self.power}%")
+        
+        # B - reverse polarity
+        elif event.button == 1:
+            self.polarity *= -1
+            print(f"\nPolarity: {self.polarity}")
+        
+        # A - toggle recording
+        elif event.button == 3:
+            self.recording = not self.recording
+            if self.recording:
+                self.start_recording()
+            else:
+                self.stop_recording()
+        
+        # Menu - quit
+        elif event.button == 6:
+            self.running = False
+            print("\nQuitting...")
+    
+    def start_recording(self):
+        global video_out, current_video_path
+        
+        """Create new session folder and start recording"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_folder = os.path.join(RECORDINGS_FOLDER, f"session_{timestamp}")
+        os.makedirs(self.session_folder, exist_ok=True)
+        
+        # Start HDF5 recording
+        self.h5_recorder = HDF5Recorder(self.session_folder)
+        
+        # Start video recording
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        current_video_path = get_new_filename(self.session_folder, "video", ".mp4")
+        video_out = cv2.VideoWriter(current_video_path, fourcc, fps, (width, height))
+        
+        print(f"\n🔴 RECORDING started - {os.path.basename(self.session_folder)}")
+        print(f"   Video: {os.path.basename(current_video_path)}")
+    
+    def stop_recording(self):
+        global video_out, current_video_path
+        
+        """Stop recording and close files"""
+        # Stop HDF5 recording
+        if self.h5_recorder:
+            self.h5_recorder.close()
+            self.h5_recorder = None
+        
+        # Stop video recording
+        if video_out is not None:
+            video_out.release()
+            video_out = None
+            if current_video_path and os.path.exists(current_video_path):
+                size = os.path.getsize(current_video_path) / (1024 * 1024)
+                print(f"   Video saved: {os.path.basename(current_video_path)} ({size:.1f} MB)")
+            current_video_path = None
+        
+        print(f"\n⏹️ RECORDING stopped")
+        self.session_folder = None
+    
+    def log_data(self, ts, accel, gyro, mag, motors, frame_info):
+        """Log one sample if recording"""
+        if self.recording and self.h5_recorder:
+            frame_captured = frame_info is not None
+            frame_num = frame_info[1] if frame_info else -1
+            
+            self.h5_recorder.append(
+                ts, accel, gyro, mag, motors,
+                frame_captured, frame_num
+            )
+
+# ===== MAIN LOOP =====
+def main():
+    global video_out, current_video_path
+    
+    print("=" * 60)
+    print(f"BBot Control - {HERTZ}Hz Request-Response Mode")
+    print("=" * 60)
+    print("Controls:")
+    print("  Left Stick: Left motor")
+    print("  Right Stick: Right motor")
+    print("  LB/RB: Power -/+")
+    print("  B: Reverse polarity")
+    print("  A: Start/Stop recording")
+    print("  MENU: Quit")
+    print("=" * 60)
+    
+    # Initialize
+    try:
+        joystick = JoystickControl()
+    except Exception as e:
+        print(f"Joystick error: {e}")
+        return
+    
+    serial_comm = SerialComm(PORT, BAUDRATE)
+    
+    # Clear any stale data
+    serial_comm.clear_buffer()
+    time.sleep(0.5)
+    
+    # Timing
+    last_status = time.time()
+    loop_count = 0
+    response_success = 0
+    response_timeout = 0
+    frame_counter = 0
+    
+    try:
+        while joystick.running:
+            cycle_start = time.time()
+            frame_info = None
+            frame_counter += 1
+            
+            # ===== 1. Get joystick input =====
+            left, right = joystick.update()
+            
+            # ===== 2. Send motor command =====
+            serial_comm.send_motor_command(left*-1, right)
+            
+            # ===== 3. Simple camera grab =====
+            ret, frame = cap.read()
+            if ret:
+                # Show the frame
+                cv2.imshow('Camera', frame)
+                cv2.waitKey(1)
+                
+                # Create frame_info for logging (timestamp, frame_num)
+                frame_info = (time.time(), frame_counter)
+                
+                # Save to video if recording
+                if joystick.recording and video_out is not None:
+                    video_out.write(frame)
+            
+            # ===== 4. Wait for and read IMU response =====
+            timeout_ms = int(LOOP_INTERVAL * 1000 * 0.8)
+            imu_packet = serial_comm.read_imu_packet(timeout_ms)
+            
+            if imu_packet:
+                response_success += 1
+                ts, accel, gyro, mag, motors = imu_packet
+                
+                # Log if recording
+                joystick.log_data(ts, accel, gyro, mag, motors, frame_info)
+            else:
+                response_timeout += 1
+            
+            # ===== 5. Maintain loop timing =====
+            loop_count += 1
+            elapsed = time.time() - cycle_start
+            sleep_time = max(0, LOOP_INTERVAL - elapsed)
+            time.sleep(sleep_time)
+            
+            # ===== 6. Status display =====
+            if time.time() - last_status > 0.5:
+                if loop_count > 0:
+                    success_rate = response_success / loop_count * 100
+                else:
+                    success_rate = 0
+                
+                # Camera status
+                cam_status = "📷" if ret else "📷❌"
+                
+                print(f"\rL={left:4d} R={right:4d} | "
+                      f"Power: {joystick.power:2d}% | "
+                      f"Response: {success_rate:3.0f}% | "
+                      f"{cam_status} | "
+                      f"{'🔴' if joystick.recording else '⚫'}      ", 
+                      end='', flush=True)
+                
+                loop_count = 0
+                response_success = 0
+                response_timeout = 0
+                last_status = time.time()
+    
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user")
+    finally:
+        # Clean shutdown
+        if joystick.recording:
+            joystick.stop_recording()
+        
+        serial_comm.send_motor_command(0, 0)
+        serial_comm.close()
+        cap.release()
+        if video_out is not None:
+            video_out.release()
+        cv2.destroyAllWindows()
+        pygame.quit()
+        print("\nShutdown complete")
+
+if __name__ == "__main__":
+    main()
