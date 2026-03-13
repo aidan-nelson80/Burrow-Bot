@@ -1,0 +1,285 @@
+//  _____  _       _    __                     
+// |  __ \| |     | |  / _|                    
+// | |__) | | __ _| |_| |_ ___  _ __ _ __ ___  
+// |  ___/| |/ _` | __|  _/ _ \| '__| '_ ` _ \ 
+// | |    | | (_| | |_| || (_) | |  | | | | | |
+// |_|    |_|\__,_|\__|_| \___/|_|  |_| |_| |_|
+
+// ===== ANTENNA - RESPONDER MODE =====
+// Waits for motor command, responds with IMU data
+
+#include <ICM_20948.h>
+#include <Wire.h>
+
+// ===== CONFIGURATION =====
+#define BAUD_RATE 460800
+
+// Packet markers
+#define PKT_START 0xAA
+#define PKT_END 0x55
+
+// Pins
+#define UART_TX_PIN 43
+#define UART_RX_PIN 44
+#define I2C_SDA 5
+#define I2C_SCL 6
+#define ICM20948_ADDR 0x69
+
+// Motor pins (DRV8835 IN/IN mode)
+#define AIN1 1
+#define AIN2 2
+#define BIN1 3
+#define BIN2 4
+#define LED_BUILTIN 21
+
+// ===== GLOBAL OBJECTS =====
+ICM_20948_I2C myIMU;
+
+// ===== MOTOR STATE =====
+int16_t currentLeftPWM = 0;
+int16_t currentRightPWM = 0;
+
+// ===== IMU STATE =====
+uint8_t magCounter = 0;
+const uint8_t MAG_DIVIDER = 1;  // At 100Hz, read mag every cycle (100Hz)
+const int16_t MAG_SENTINEL = 0x7FFF;
+
+// ===== PACKET BUFFERS =====
+uint8_t rxBuffer[6];   // [START][4 data][END]
+uint8_t txBuffer[32];  // [START][30 data][END]
+
+// ===== LED STATUS =====
+bool imuHealthy = false;
+
+bool initIMUWithFeedback() {
+  const int MAX_RETRIES = 5;
+  
+  for (int i = 0; i < MAX_RETRIES; i++) {
+    // Try to initialize
+    myIMU.begin(Wire, ICM20948_ADDR);
+    
+    if (myIMU.status == ICM_20948_Stat_Ok) {
+      // Configure for maximum resolution
+      ICM_20948_fss_t myFSS;
+      myFSS.a = gpm2;      // ±2g
+      myFSS.g = dps250;    // ±250dps
+      myIMU.setFullScale((ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr), myFSS);
+      
+      // Success! Blink fast 5 times
+      for (int b = 0; b < 5; b++) {
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(100);
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(100);
+      }
+      return true;
+    }
+    
+    // Failed this attempt - slow blink 3 times
+    for (int b = 0; b < 3; b++) {
+      digitalWrite(LED_BUILTIN, HIGH);
+      delay(500);
+      digitalWrite(LED_BUILTIN, LOW);
+      delay(500);
+    }
+  }
+  
+  return false;  // All retries failed
+}
+
+// ===== SETUP =====
+void setup() {
+  // Initialize serial first for debugging
+  Serial1.begin(BAUD_RATE, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+  
+  // Setup motor pins
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  
+  // PWM setup
+  analogWriteFrequency(1000);
+  analogWriteResolution(8);
+  
+  // Start with motors stopped
+  analogWrite(AIN1, 0);
+  analogWrite(AIN2, 0);
+  analogWrite(BIN1, 0);
+  analogWrite(BIN2, 0);
+  currentLeftPWM = 0;
+  currentRightPWM = 0;
+  
+  // Initialize I2C
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000);
+  
+  // Try to initialize IMU with LED feedback
+  imuHealthy = initIMUWithFeedback();
+  
+  if (!imuHealthy) {
+    // IMU failed - blink slowly forever
+    while (1) {
+      digitalWrite(LED_BUILTIN, HIGH);
+      delay(500);
+      digitalWrite(LED_BUILTIN, LOW);
+      delay(500);
+    }
+  }
+}
+
+// ===== MOTOR FUNCTIONS =====
+void setLeftMotor(int16_t pwm) {
+  pwm = constrain(pwm, -255, 255);
+  if (pwm > 0) {
+    analogWrite(AIN1, pwm);
+    analogWrite(AIN2, 0);
+  } else if (pwm < 0) {
+    analogWrite(AIN1, 0);
+    analogWrite(AIN2, -pwm);
+  } else {
+    analogWrite(AIN1, 0);
+    analogWrite(AIN2, 0);
+  }
+}
+
+void setRightMotor(int16_t pwm) {
+  pwm = constrain(pwm, -255, 255);
+  if (pwm > 0) {
+    analogWrite(BIN1, pwm);
+    analogWrite(BIN2, 0);
+  } else if (pwm < 0) {
+    analogWrite(BIN1, 0);
+    analogWrite(BIN2, -pwm);
+  } else {
+    analogWrite(BIN1, 0);
+    analogWrite(BIN2, 0);
+  }
+}
+
+void setMotors(int16_t left, int16_t right) {
+  setLeftMotor(left);
+  setRightMotor(right);
+  currentLeftPWM = left;
+  currentRightPWM = right;
+}
+
+void stopMotors() {
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, LOW);
+  currentLeftPWM = 0;
+  currentRightPWM = 0;
+}
+
+// ===== READ MOTOR COMMAND =====
+bool readMotorCommand() {
+  // Wait for start marker (with timeout to prevent lockup)
+  // unsigned long timeout = millis() + 100;  // 10ms timeout
+  // while (Serial1.available() == 0) {
+  //   if (millis() > timeout) {
+  //     return false;  // Timeout - no command
+  //   }
+  // }
+  
+  // Check for start marker
+  int i = 1;
+
+  while (i == 1){
+    if (Serial1.read() != PKT_START) {
+        i = 1;  // Not a valid start
+      }
+    else{
+      i = 0;
+    }
+  }
+  
+  
+  // Read the rest of the command
+  if (Serial1.available() >= 5) {  // 4 data + 1 end
+    uint8_t data[4];
+    Serial1.readBytes(data, 4);
+    uint8_t endMarker = Serial1.read();
+    
+    if (endMarker == PKT_END) {
+      // Valid command received
+      int16_t left = (data[0] << 8) | data[1];
+      int16_t right = (data[2] << 8) | data[3];
+      setMotors(left, right);
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// ===== READ IMU AND SEND RESPONSE =====
+void sendIMUResponse() {
+  txBuffer[0] = PKT_START;
+  
+  // Read IMU if available
+  if (imuHealthy && myIMU.dataReady()) {
+    myIMU.getAGMT();
+    
+    // Timestamp (8 bytes)
+    uint64_t timestamp = micros();
+    memcpy(txBuffer + 1, &timestamp, 8);
+    
+    // Accelerometer (6 bytes)
+    int16_t accel[3] = {myIMU.accX(), myIMU.accY(), myIMU.accZ()};
+    memcpy(txBuffer + 9, accel, 6);
+    
+    // Gyroscope (6 bytes)
+    int16_t gyro[3] = {myIMU.gyrX(), myIMU.gyrY(), myIMU.gyrZ()};
+    memcpy(txBuffer + 15, gyro, 6);
+    
+    // Magnetometer (6 bytes) - fresh every cycle at 100Hz
+    int16_t mag[3];
+    if (++magCounter >= MAG_DIVIDER) {
+      mag[0] = myIMU.magX();
+      mag[1] = myIMU.magY();
+      mag[2] = myIMU.magZ();
+      magCounter = 0;
+    } else {
+      mag[0] = MAG_SENTINEL;
+      mag[1] = MAG_SENTINEL;
+      mag[2] = MAG_SENTINEL;
+    }
+    memcpy(txBuffer + 21, mag, 6);
+    
+    // Motor values (4 bytes)
+    int16_t motors[2] = {currentLeftPWM, currentRightPWM};
+    memcpy(txBuffer + 27, motors, 4);
+  } else {
+    // IMU not ready - send zeros with sentinel mag
+    uint64_t timestamp = micros();
+    memcpy(txBuffer + 1, &timestamp, 8);
+    
+    int16_t zeros[3] = {0, 0, 0};
+    memcpy(txBuffer + 9, zeros, 6);   // accel
+    memcpy(txBuffer + 15, zeros, 6);  // gyro
+    
+    int16_t sentinel[3] = {MAG_SENTINEL, MAG_SENTINEL, MAG_SENTINEL};
+    memcpy(txBuffer + 21, sentinel, 6);  // mag
+    
+    int16_t motors[2] = {currentLeftPWM, currentRightPWM};
+    memcpy(txBuffer + 27, motors, 4);  // motors
+  }
+  
+  txBuffer[31] = PKT_END;
+  Serial1.write(txBuffer, 32);
+}
+
+// ===== MAIN LOOP =====
+void loop() {
+  // 1. Wait for and process motor command
+  readMotorCommand();
+  
+  // 2. Read IMU and send response
+  sendIMUResponse();
+  
+  // Small delay to prevent CPU spinning
+  delayMicroseconds(10);
+}
