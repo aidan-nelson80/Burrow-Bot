@@ -295,7 +295,7 @@ class JoystickControl:
         current_video_path = get_new_filename(self.session_folder, "video", ".mp4")
         video_out = cv2.VideoWriter(current_video_path, fourcc, fps, (width, height))
         
-        print(f"\n🔴 RECORDING started - {os.path.basename(self.session_folder)}")
+        print(f"\nRECORDING started - {os.path.basename(self.session_folder)}")
         print(f"   Video: {os.path.basename(current_video_path)}")
     
     def stop_recording(self):
@@ -316,7 +316,7 @@ class JoystickControl:
                 print(f"   Video saved: {os.path.basename(current_video_path)} ({size:.1f} MB)")
             current_video_path = None
         
-        print(f"\n⏹️ RECORDING stopped")
+        print(f"\nRECORDING stopped")
         self.session_folder = None
     
     def log_data(self, ts, accel, gyro, mag, motors, frame_info):
