@@ -115,11 +115,11 @@ void setup() {
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
   
-  // Try to initialize IMU with LED feedback
+  // Try to initialize IMU
   imuHealthy = initIMUWithFeedback();
   
   if (!imuHealthy) {
-    // IMU failed - blink slowly forever
+    // IMU failed
     while (1) {
       digitalWrite(LED_BUILTIN, HIGH);
       delay(500);
@@ -176,15 +176,7 @@ void stopMotors() {
 
 // ===== READ MOTOR COMMAND =====
 bool readMotorCommand() {
-  // Wait for start marker (with timeout to prevent lockup)
-  // unsigned long timeout = millis() + 100;  // 10ms timeout
-  // while (Serial1.available() == 0) {
-  //   if (millis() > timeout) {
-  //     return false;  // Timeout - no command
-  //   }
-  // }
-  
-  // Check for start marker
+
   int i = 1;
 
   while (i == 1){
