@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-BBot Control - 100Hz Request-Response Pattern
-Sends motor command, waits for IMU response, logs to HDF5
-Simple camera integration - no threads, just grab frames when available
-"""
-
 import pygame
 import serial
 import struct
@@ -18,7 +11,7 @@ from datetime import datetime
 # ===== CONFIGURATION =====
 PORT = 'COM7'
 BAUDRATE = 460800
-HERTZ = 100  # Easy to change!
+HERTZ = 100
 LOOP_INTERVAL = 1.0 / HERTZ
 
 # Packet markers
@@ -26,10 +19,11 @@ PKT_START = 0xAA
 PKT_END = 0x55
 
 # Recording folder
-RECORDINGS_FOLDER = r"C:\Users\aidan\Documents\AAA Research\AAA Big Tank\Recordings"
+#****************************************************************************************************************************
+RECORDINGS_FOLDER = r"C:\Users\aidan\Documents\AAA Research\AAA Big Tank\Recordings" #THIS NEEDS TO BE CHANGED TO USERS FOLDER
+#****************************************************************************************************************************
 os.makedirs(RECORDINGS_FOLDER, exist_ok=True)
 
-# ===== HELPER FUNCTIONS =====
 def get_new_filename(folder, base_name, extension):
     """Generate unique filename in folder"""
     index = 1
@@ -57,7 +51,6 @@ print(f"Camera: {width}x{height} at {fps}fps")
 video_out = None
 current_video_path = None
 
-# ===== SERIAL COMMUNICATION =====
 class SerialComm:
     def __init__(self, port, baudrate):
         self.ser = serial.Serial(port, baudrate, timeout=0.001)
@@ -426,13 +419,13 @@ def main():
                     success_rate = 0
                 
                 # Camera status
-                cam_status = "📷" if ret else "📷❌"
+                cam_status = "Cam Good" if ret else "Cam Bad"
                 
                 print(f"\rL={left:4d} R={right:4d} | "
                       f"Power: {joystick.power:2d}% | "
                       f"Response: {success_rate:3.0f}% | "
                       f"{cam_status} | "
-                      f"{'🔴' if joystick.recording else '⚫'}      ", 
+                      f"{'Recording...' if joystick.recording else 'Ready'}      ", 
                       end='', flush=True)
                 
                 loop_count = 0
