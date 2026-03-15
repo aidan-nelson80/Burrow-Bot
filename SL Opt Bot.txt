@@ -84,7 +84,7 @@ bool initIMUWithFeedback() {
     }
   }
   
-  return false;  // All retries failed
+  return false; 
 }
 
 // ===== SETUP =====
