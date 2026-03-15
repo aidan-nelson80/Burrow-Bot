@@ -22,7 +22,7 @@ void setup() {
   // UART to Antenna
   Serial1.begin(BAUD_RATE, SERIAL_8N1, BRIDGE_RX_PIN, BRIDGE_TX_PIN);
   
-  // Small buffers are fine - we forward immediately
+  // Small buffers are fine - we forward immediately 
   delay(500);
   
   // Optional: blink once to show ready
