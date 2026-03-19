@@ -8,8 +8,9 @@
 // ===== ANTENNA - RESPONDER MODE =====
 // Waits for motor command, responds with IMU data
 
-#include <ICM_20948.h>
 #include <Wire.h>
+#include "ldc1101.h"
+
 
 // ===== CONFIGURATION =====
 #define BAUD_RATE 460800
@@ -23,7 +24,7 @@
 #define UART_RX_PIN 44
 #define I2C_SDA 5
 #define I2C_SCL 6
-#define ICM20948_ADDR 0x69
+
 
 // Motor pins (DRV8835 IN/IN mode)
 #define AIN1 1
@@ -32,8 +33,7 @@
 #define BIN2 4
 #define LED_BUILTIN 21
 
-// ===== GLOBAL OBJECTS =====
-ICM_20948_I2C myIMU;
+
 
 // ===== MOTOR STATE =====
 int16_t currentLeftPWM = 0;
@@ -46,46 +46,9 @@ const int16_t MAG_SENTINEL = 0x7FFF;
 
 // ===== PACKET BUFFERS =====
 uint8_t rxBuffer[6];   // [START][4 data][END]
-uint8_t txBuffer[32];  // [START][30 data][END]
+uint8_t txBuffer[22];  // [START][30 data][END]
 
-// ===== LED STATUS =====
-bool imuHealthy = false;
 
-bool initIMUWithFeedback() {
-  const int MAX_RETRIES = 5;
-  
-  for (int i = 0; i < MAX_RETRIES; i++) {
-    // Try to initialize
-    myIMU.begin(Wire, ICM20948_ADDR);
-    
-    if (myIMU.status == ICM_20948_Stat_Ok) {
-      // Configure for maximum resolution
-      ICM_20948_fss_t myFSS;
-      myFSS.a = gpm2;      // ±2g
-      myFSS.g = dps250;    // ±250dps
-      myIMU.setFullScale((ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr), myFSS);
-      
-      // Success! Blink fast 5 times
-      for (int b = 0; b < 5; b++) {
-        digitalWrite(LED_BUILTIN, HIGH);
-        delay(100);
-        digitalWrite(LED_BUILTIN, LOW);
-        delay(100);
-      }
-      return true;
-    }
-    
-    // Failed this attempt - slow blink 3 times
-    for (int b = 0; b < 3; b++) {
-      digitalWrite(LED_BUILTIN, HIGH);
-      delay(500);
-      digitalWrite(LED_BUILTIN, LOW);
-      delay(500);
-    }
-  }
-  
-  return false; 
-}
 
 // ===== SETUP =====
 void setup() {
@@ -114,19 +77,14 @@ void setup() {
   // Initialize I2C
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
-  
-  // Try to initialize IMU
-  imuHealthy = initIMUWithFeedback();
-  
-  if (!imuHealthy) {
-    // IMU failed
-    while (1) {
-      digitalWrite(LED_BUILTIN, HIGH);
-      delay(500);
-      digitalWrite(LED_BUILTIN, LOW);
-      delay(500);
-    }
-  }
+
+  ldc1101_init();
+
+  ldc1101_configure(
+    11.8e-6,
+    220e-12,
+    30
+  );
 }
 
 // ===== MOTOR FUNCTIONS =====
@@ -208,60 +166,25 @@ bool readMotorCommand() {
 }
 
 // ===== READ IMU AND SEND RESPONSE =====
-void sendIMUResponse() {
+void sendLDCResponse() {
   txBuffer[0] = PKT_START;
-  
-  // Read IMU if available
-  if (imuHealthy && myIMU.dataReady()) {
-    myIMU.getAGMT();
-    
-    // Timestamp (8 bytes)
-    uint64_t timestamp = micros();
-    memcpy(txBuffer + 1, &timestamp, 8);
-    
-    // Accelerometer (6 bytes)
-    int16_t accel[3] = {myIMU.accX(), myIMU.accY(), myIMU.accZ()};
-    memcpy(txBuffer + 9, accel, 6);
-    
-    // Gyroscope (6 bytes)
-    int16_t gyro[3] = {myIMU.gyrX(), myIMU.gyrY(), myIMU.gyrZ()};
-    memcpy(txBuffer + 15, gyro, 6);
-    
-    // Magnetometer (6 bytes) - fresh every cycle at 100Hz
-    int16_t mag[3];
-    if (++magCounter >= MAG_DIVIDER) {
-      mag[0] = myIMU.magX();
-      mag[1] = myIMU.magY();
-      mag[2] = myIMU.magZ();
-      magCounter = 0;
-    } else {
-      mag[0] = MAG_SENTINEL;
-      mag[1] = MAG_SENTINEL;
-      mag[2] = MAG_SENTINEL;
-    }
-    memcpy(txBuffer + 21, mag, 6);
-    
-    // Motor values (4 bytes)
-    int16_t motors[2] = {currentLeftPWM, currentRightPWM};
-    memcpy(txBuffer + 27, motors, 4);
-  } else {
-    // IMU not ready - send zeros with sentinel mag
-    uint64_t timestamp = micros();
-    memcpy(txBuffer + 1, &timestamp, 8);
-    
-    int16_t zeros[3] = {0, 0, 0};
-    memcpy(txBuffer + 9, zeros, 6);   // accel
-    memcpy(txBuffer + 15, zeros, 6);  // gyro
-    
-    int16_t sentinel[3] = {MAG_SENTINEL, MAG_SENTINEL, MAG_SENTINEL};
-    memcpy(txBuffer + 21, sentinel, 6);  // mag
-    
-    int16_t motors[2] = {currentLeftPWM, currentRightPWM};
-    memcpy(txBuffer + 27, motors, 4);  // motors
-  }
-  
-  txBuffer[31] = PKT_END;
-  Serial1.write(txBuffer, 32);
+
+  uint64_t timestamp = micros();
+  memcpy(txBuffer + 1, &timestamp, 8);
+
+  int16_t motors[2] = {currentLeftPWM, currentRightPWM};
+  memcpy(txBuffer + 9, motors, 4);
+
+ ldc1101_measurement_t ldc = ldc1101_read(220e-12);
+
+  // LDC data (8 bytes)
+  float rp = ldc.Rp_ohms;
+  float l = ldc.L_uH;
+
+  memcpy(txBuffer + 13, &rp, 4);
+  memcpy(txBuffer + 17, &l,  4);
+  txBuffer[21] = PKT_END;
+  Serial1.write(txBuffer, 22);
 }
 
 // ===== MAIN LOOP =====
@@ -270,7 +193,7 @@ void loop() {
   readMotorCommand();
   
   // 2. Read IMU and send response
-  sendIMUResponse();
+  sendLDCResponse();
   
   // Small delay to prevent CPU spinning
   delayMicroseconds(10);

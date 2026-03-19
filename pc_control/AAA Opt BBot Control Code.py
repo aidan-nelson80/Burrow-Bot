@@ -73,8 +73,8 @@ class SerialComm:
         
         self.ser.write(packet)
     
-    def read_imu_packet(self, timeout_ms=8):
-        """Wait for and read a complete IMU packet"""
+    def read_ldc_packet(self, timeout_ms=8):
+        """Wait for and read a complete LDC packet"""
         end_time = time.time() + (timeout_ms / 1000.0)
         
         while time.time() < end_time:
@@ -84,23 +84,22 @@ class SerialComm:
             
             # Look for start marker
             start_idx = self.read_buffer.find(bytes([PKT_START]))
-            if start_idx >= 0 and len(self.read_buffer) >= start_idx + 32:
-                packet = self.read_buffer[start_idx:start_idx + 32]
+            if start_idx >= 0 and len(self.read_buffer) >= start_idx + 22:
+                packet = self.read_buffer[start_idx:start_idx + 22]
                 
                 # Check end marker
-                if packet[31] == PKT_END:
+                if packet[21] == PKT_END:
                     # Extract 30 bytes of data
-                    data = packet[1:31]
+                    data = packet[1:21]
                     try:
                         ts, = struct.unpack('<Q', data[0:8])
-                        accel = struct.unpack('<3h', data[8:14])
-                        gyro = struct.unpack('<3h', data[14:20])
-                        mag = struct.unpack('<3h', data[20:26])
-                        motors = struct.unpack('<hh', data[26:30])
+                        motors = struct.unpack('<hh', data[8:12])
+                        rp, = struct.unpack('<f', data[12:16])
+                        l,  = struct.unpack('<f', data[16:20])
                         
                         # Remove packet from buffer
-                        self.read_buffer = self.read_buffer[start_idx + 32:]
-                        return ts, accel, gyro, mag, motors
+                        self.read_buffer = self.read_buffer[start_idx + 22:]
+                        return ts, motors,rp,l
                     except:
                         # Bad data, remove first byte and try again
                         self.read_buffer = self.read_buffer[1:]
@@ -124,80 +123,76 @@ class SerialComm:
     def close(self):
         self.ser.close()
 
-# ===== HDF5 RECORDER =====
+# ===== HDF5 RECORDER (LDC + MOTORS) =====
 class HDF5Recorder:
     def __init__(self, session_folder):
-        self.h5_path = os.path.join(session_folder, "imu_data.h5")
+        self.h5_path = os.path.join(session_folder, "ldc_data.h5")
         self.h5_file = h5py.File(self.h5_path, 'w')
         
-        # Create datasets
+        # ===== DATASETS =====
         self.ts_dset = self.h5_file.create_dataset(
             'timestamp', (0,), maxshape=(None,),
             dtype='uint64', chunks=True, compression='gzip'
         )
-        self.accel_dset = self.h5_file.create_dataset(
-            'accel', (0, 3), maxshape=(None, 3),
-            dtype='int16', chunks=True, compression='gzip'
-        )
-        self.gyro_dset = self.h5_file.create_dataset(
-            'gyro', (0, 3), maxshape=(None, 3),
-            dtype='int16', chunks=True, compression='gzip'
-        )
-        self.mag_dset = self.h5_file.create_dataset(
-            'mag', (0, 3), maxshape=(None, 3),
-            dtype='int16', chunks=True, compression='gzip'
-        )
+
         self.motor_dset = self.h5_file.create_dataset(
             'motors', (0, 2), maxshape=(None, 2),
             dtype='int16', chunks=True, compression='gzip'
         )
+
+        self.rp_dset = self.h5_file.create_dataset(
+            'rp_ohms', (0,), maxshape=(None,),
+            dtype='float32', chunks=True, compression='gzip'
+        )
+
+        self.l_dset = self.h5_file.create_dataset(
+            'inductance_uH', (0,), maxshape=(None,),
+            dtype='float32', chunks=True, compression='gzip'
+        )
+
         self.frame_flag_dset = self.h5_file.create_dataset(
             'frame_captured', (0,), maxshape=(None,),
             dtype='bool', chunks=True, compression='gzip'
         )
+
         self.frame_num_dset = self.h5_file.create_dataset(
             'frame_number', (0,), maxshape=(None,),
             dtype='int32', chunks=True, compression='gzip'
         )
         
-        # Metadata
+        # ===== METADATA =====
         self.h5_file.attrs['start_time'] = time.time()
         self.h5_file.attrs['sample_rate_hz'] = HERTZ
         self.h5_file.attrs['camera_fps'] = fps
         
         self.sample_count = 0
     
-    def append(self, ts, accel, gyro, mag, motors, frame_captured, frame_num):
-        """Add one sample"""
+    def append(self, ts, motors, rp, l, frame_captured, frame_num):
         idx = self.sample_count
         
-        # Resize datasets
+        # Resize
         self.ts_dset.resize((idx + 1,))
-        self.accel_dset.resize((idx + 1, 3))
-        self.gyro_dset.resize((idx + 1, 3))
-        self.mag_dset.resize((idx + 1, 3))
         self.motor_dset.resize((idx + 1, 2))
+        self.rp_dset.resize((idx + 1,))
+        self.l_dset.resize((idx + 1,))
         self.frame_flag_dset.resize((idx + 1,))
         self.frame_num_dset.resize((idx + 1,))
         
-        # Write data
+        # Write
         self.ts_dset[idx] = ts
-        self.accel_dset[idx] = accel
-        self.gyro_dset[idx] = gyro
-        self.mag_dset[idx] = mag
         self.motor_dset[idx] = motors
+        self.rp_dset[idx] = rp
+        self.l_dset[idx] = l
         self.frame_flag_dset[idx] = frame_captured
         self.frame_num_dset[idx] = frame_num if frame_captured else -1
         
         self.sample_count += 1
     
     def close(self):
-        """Just close - no conversion"""
         self.h5_file.attrs['end_time'] = time.time()
         self.h5_file.attrs['sample_count'] = self.sample_count
         self.h5_file.close()
         print(f"\nHDF5 saved: {self.h5_path} ({self.sample_count} samples)")
-
 # ===== JOYSTICK CONTROL =====
 class JoystickControl:
     def __init__(self):
@@ -319,14 +314,14 @@ class JoystickControl:
         print(f"\nRECORDING stopped")
         self.session_folder = None
     
-    def log_data(self, ts, accel, gyro, mag, motors, frame_info):
+    def log_data(self, ts, motors,rp, l, frame_info):
         """Log one sample if recording"""
         if self.recording and self.h5_recorder:
             frame_captured = frame_info is not None
             frame_num = frame_info[1] if frame_info else -1
             
             self.h5_recorder.append(
-                ts, accel, gyro, mag, motors,
+                ts, motors,rp, l,
                 frame_captured, frame_num
             )
 
@@ -394,14 +389,15 @@ def main():
             
             # ===== 4. Wait for and read IMU response =====
             timeout_ms = int(LOOP_INTERVAL * 1000 * 0.8)
-            imu_packet = serial_comm.read_imu_packet(timeout_ms)
+            ldc_packet = serial_comm.read_ldc_packet(timeout_ms)
             
-            if imu_packet:
+            if ldc_packet:
                 response_success += 1
-                ts, accel, gyro, mag, motors = imu_packet
+                ts, motors, rp, l = ldc_packet
                 
+                print(f"\r{ts/1e6:.3f},{rp:.2f},{l:.2f}uH", end='')
                 # Log if recording
-                joystick.log_data(ts, accel, gyro, mag, motors, frame_info)
+                joystick.log_data(ts, motors,rp,l, frame_info)
             else:
                 response_timeout += 1
             
