@@ -278,6 +278,9 @@ class JoystickControl:
         elif event.button == 6:
             self.running = False
             print("\nQuitting...")
+            
+        else:
+        print(f"Button {event.button} pressed")
     
     def start_recording(self):
         global video_out, current_video_path
