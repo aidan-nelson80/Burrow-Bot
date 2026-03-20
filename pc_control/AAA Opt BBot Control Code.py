@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 
 # ===== CONFIGURATION =====
-PORT = 'COM7'
+PORT = 'COM22'
 BAUDRATE = 460800
 HERTZ = 100
 LOOP_INTERVAL = 1.0 / HERTZ
@@ -20,7 +20,7 @@ PKT_END = 0x55
 
 # Recording folder
 #****************************************************************************************************************************
-RECORDINGS_FOLDER = r"C:\Users\aidan\Documents\AAA Research\AAA Big Tank\Recordings" #THIS NEEDS TO BE CHANGED TO USERS FOLDER
+RECORDINGS_FOLDER = r"C:\Users\newsp\Burrow-Bot\Recordings" #THIS NEEDS TO BE CHANGED TO USERS FOLDER
 #****************************************************************************************************************************
 os.makedirs(RECORDINGS_FOLDER, exist_ok=True)
 

@@ -165,7 +165,7 @@ bool readMotorCommand() {
   return false;
 }
 
-// ===== READ IMU AND SEND RESPONSE =====
+// ===== READ LDC AND SEND RESPONSE =====
 void sendLDCResponse() {
   txBuffer[0] = PKT_START;
 
