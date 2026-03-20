@@ -7,7 +7,6 @@
 #define LDC_SCK    7
 #define LDC_CS     6
 
-
 #define F_CLKIN 16000000.0f //This is based on the 16MHz crystal selected by Alex
 
 

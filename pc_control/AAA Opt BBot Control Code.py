@@ -6,7 +6,24 @@ import cv2
 import h5py
 import numpy as np
 import os
+import subprocess
+import sys
+
 from datetime import datetime
+
+# pyqtgraph availability is checked in subprocess to avoid crashes in this process
+pyqtgraph_available = False
+try:
+    result = subprocess.run(
+        [sys.executable, "-c", "import pyqtgraph, pyqtgraph.Qt"],
+        capture_output=True, text=True, timeout=10
+    )
+    if result.returncode == 0:
+        pyqtgraph_available = True
+    else:
+        print(f"pyqtgraph unavailable (subprocess): {result.stderr.strip()}")
+except Exception as e:
+    print(f"pyqtgraph availability subprocess check failed: {e}")
 
 # ===== CONFIGURATION =====
 PORT = 'COM22'
@@ -50,6 +67,55 @@ print(f"Camera: {width}x{height} at {fps}fps")
 # Video writer (will be created when recording starts)
 video_out = None
 current_video_path = None
+
+# ===== GLOBAL PLOTTING STATE =====
+plot_app = None
+plot_window = None
+plot_curve = None
+plot_pg = None
+plot_QtGui = None
+plot_l = []
+plot_rp = []
+plot_ready = False
+
+def init_plot_window():
+    global plot_app, plot_window, plot_curve, plot_ready
+
+    if not pyqtgraph_available:
+        print("plot window not available: pyqtgraph unavailable")
+        plot_ready = False
+        return
+
+    global plot_pg, plot_QtGui
+    try:
+        import pyqtgraph as pg
+        from pyqtgraph.Qt import QtWidgets
+        plot_pg = pg
+        plot_QtGui = QtWidgets
+    except Exception as e:
+        print(f"plot window import failed: {e}")
+        plot_ready = False
+        return
+
+    if plot_app is None:
+        try:
+            plot_app = plot_QtGui.QApplication([])
+        except Exception as e:
+            print(f"plot window init failed: {e}")
+            plot_ready = False
+            return
+
+    try:
+        plot_window = plot_pg.plot(title="L vs Rp")
+        plot_window.setLabel('bottom', 'Inductance (uH)')
+        plot_window.setLabel('left', 'Rp (Ohms)')
+        plot_curve = plot_window.plot([], [], pen=None, symbol=None)
+        plot_window.show()
+        plot_ready = True
+        print("plot window initialized successfully")
+    except Exception as e:
+        print(f"plot window setup failed: {e}")
+        plot_ready = False
 
 class SerialComm:
     def __init__(self, port, baudrate):
@@ -327,7 +393,7 @@ class JoystickControl:
 
 # ===== MAIN LOOP =====
 def main():
-    global video_out, current_video_path
+    global video_out, current_video_path, plot_l, plot_rp, plot_ready, plot_curve, plot_QtGui
     
     print("=" * 60)
     print(f"BBot Control - {HERTZ}Hz Request-Response Mode")
@@ -395,6 +461,31 @@ def main():
                 response_success += 1
                 ts, motors, rp, l = ldc_packet
                 
+                if not plot_ready:
+                    init_plot_window()
+
+                if plot_ready:
+                    plot_l.append(l)
+                    plot_rp.append(rp)
+                    # Keep only last 10000 points
+                    if len(plot_l) > 10000:
+                        plot_l = plot_l[-10000:]
+                        plot_rp = plot_rp[-10000:]
+                    
+                    # Create color gradient from red (old) to orange (new)
+                    num_points = len(plot_l)
+                    colors = []
+                    for i in range(num_points):
+                        progress = i / max(1, num_points - 1)
+                        r = 255
+                        g = int(165 * progress)
+                        b = 0
+                        colors.append((r, g, b, 200))
+                    
+                    # Plot as scatter with gradient colors
+                    plot_curve.setData(plot_l, plot_rp, pen=None, symbol='o', symbolPen=None, symbolBrush=colors, symbolSize=5)
+                    plot_QtGui.QApplication.processEvents()
+
                 print(f"\r{ts/1e6:.3f},{rp:.2f},{l:.2f}uH", end='')
                 # Log if recording
                 joystick.log_data(ts, motors,rp,l, frame_info)
