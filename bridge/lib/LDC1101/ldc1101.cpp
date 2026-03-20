@@ -2,10 +2,10 @@
 #include <SPI.h>
 #include "ldc1101.h"
 
-#define LDC_MOSI   9
-#define LDC_MISO   8
-#define LDC_SCK    7
-#define LDC_CS     4
+#define LDC_MOSI   9 //D10
+#define LDC_MISO   8 //D9
+#define LDC_SCK    7 //D8
+#define LDC_CS     5 //D4
 
 
 #define F_CLKIN 16000000.0f //This is based on the 16MHz crystal selected by Alex
