@@ -107,8 +107,8 @@ def init_plot_window():
 
     try:
         plot_window = plot_pg.plot(title="L vs Rp")
-        plot_window.setLabel('bottom', 'Inductance (uH)')
-        plot_window.setLabel('left', 'Rp (Ohms)')
+        plot_window.setLabel('bottom', 'Rp (Ohms)')
+        plot_window.setLabel('left', 'Inductance (uH)')
         
         # Configure axes to show across full plot area
         plot_item = plot_window.getPlotItem()
@@ -343,6 +343,13 @@ class JoystickControl:
                 self.start_recording()
             else:
                 self.stop_recording()
+
+        # X - reset the whole plot
+        elif event.button == 0:
+            global plot_l, plot_rp
+            plot_l = []
+            plot_rp = []
+            print("\nPlot reset")
         
         # Menu - quit
         elif event.button == 6:
@@ -481,8 +488,21 @@ def main():
                         plot_l = plot_l[-10000:]
                         plot_rp = plot_rp[-10000:]
                     
+                    # Compute moving average of last 20 points
+                    window = 20
+                    smoothed_l = []
+                    smoothed_rp = []
+                    for i in range(len(plot_l)):
+                        start = max(0, i - window + 1)
+                        segment_l = plot_l[start:i+1]
+                        segment_rp = plot_rp[start:i+1]
+                        avg_l = sum(segment_l) / len(segment_l)
+                        avg_rp = sum(segment_rp) / len(segment_rp)
+                        smoothed_l.append(avg_l)
+                        smoothed_rp.append(avg_rp)
+                    
                     # Create color gradient from red (old) to orange, with last 50 points bright white
-                    num_points = len(plot_l)
+                    num_points = len(smoothed_l)
                     colors = []
                     for i in range(num_points):
                         if i >= num_points - 50:
@@ -497,12 +517,12 @@ def main():
                             colors.append((r, g, b, 200))
                     
                     # Plot as scatter with gradient colors
-                    plot_curve.setData(plot_l, plot_rp, pen=None, symbol='o', symbolPen=None, symbolBrush=colors, symbolSize=5)
+                    plot_curve.setData(smoothed_rp, smoothed_l, pen=None, symbol='o', symbolPen=None, symbolBrush=colors, symbolSize=5)
                     
                     # Update axis ranges to fit data
                     if num_points > 1:
-                        x_min, x_max = min(plot_l), max(plot_l)
-                        y_min, y_max = min(plot_rp), max(plot_rp)
+                        x_min, x_max = min(smoothed_rp), max(smoothed_rp)
+                        y_min, y_max = min(smoothed_l), max(smoothed_l)
                         x_pad = max(0.01, (x_max - x_min) * 0.05) if x_max > x_min else 0.5
                         y_pad = max(1, (y_max - y_min) * 0.05) if y_max > y_min else 50
                         plot_window.setXRange(x_min - x_pad, x_max + x_pad)
