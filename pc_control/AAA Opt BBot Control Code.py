@@ -109,6 +109,15 @@ def init_plot_window():
         plot_window = plot_pg.plot(title="L vs Rp")
         plot_window.setLabel('bottom', 'Inductance (uH)')
         plot_window.setLabel('left', 'Rp (Ohms)')
+        
+        # Configure axes to show across full plot area
+        plot_item = plot_window.getPlotItem()
+        plot_item.layout.setContentsMargins(50, 10, 10, 50)
+        
+        # Show spines on all sides so axes appear across full window
+        plot_item.showAxis('top')
+        plot_item.showAxis('right')
+        
         plot_curve = plot_window.plot([], [], pen=None, symbol=None)
         plot_window.show()
         plot_ready = True
@@ -472,18 +481,33 @@ def main():
                         plot_l = plot_l[-10000:]
                         plot_rp = plot_rp[-10000:]
                     
-                    # Create color gradient from red (old) to orange (new)
+                    # Create color gradient from red (old) to orange, with last 50 points bright white
                     num_points = len(plot_l)
                     colors = []
                     for i in range(num_points):
-                        progress = i / max(1, num_points - 1)
-                        r = 255
-                        g = int(165 * progress)
-                        b = 0
-                        colors.append((r, g, b, 200))
+                        if i >= num_points - 50:
+                            # Last 50 points: bright white
+                            colors.append((255, 255, 255, 200))
+                        else:
+                            # Earlier points: gradient from red to orange
+                            progress = i / max(1, num_points - 51)
+                            r = 255
+                            g = int(165 * progress)
+                            b = 0
+                            colors.append((r, g, b, 200))
                     
                     # Plot as scatter with gradient colors
                     plot_curve.setData(plot_l, plot_rp, pen=None, symbol='o', symbolPen=None, symbolBrush=colors, symbolSize=5)
+                    
+                    # Update axis ranges to fit data
+                    if num_points > 1:
+                        x_min, x_max = min(plot_l), max(plot_l)
+                        y_min, y_max = min(plot_rp), max(plot_rp)
+                        x_pad = max(0.01, (x_max - x_min) * 0.05) if x_max > x_min else 0.5
+                        y_pad = max(1, (y_max - y_min) * 0.05) if y_max > y_min else 50
+                        plot_window.setXRange(x_min - x_pad, x_max + x_pad)
+                        plot_window.setYRange(y_min - y_pad, y_max + y_pad)
+                    
                     plot_QtGui.QApplication.processEvents()
 
                 print(f"\r{ts/1e6:.3f},{rp:.2f},{l:.2f}uH", end='')
