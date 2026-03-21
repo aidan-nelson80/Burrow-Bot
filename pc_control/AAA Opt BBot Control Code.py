@@ -70,8 +70,13 @@ current_video_path = None
 
 # ===== GLOBAL PLOTTING STATE =====
 plot_app = None
-plot_window = None
-plot_curve = None
+plot_layout = None
+plot_time = None
+plot_scatter = None
+plot_curve_time_l = None
+plot_curve_time_rp = None
+plot_curve_scatter = None
+vb_right = None
 plot_pg = None
 plot_QtGui = None
 plot_l = []
@@ -79,7 +84,7 @@ plot_rp = []
 plot_ready = False
 
 def init_plot_window():
-    global plot_app, plot_window, plot_curve, plot_ready
+    global plot_app, plot_layout, plot_time, plot_scatter, plot_curve_time_l, plot_curve_time_rp, plot_curve_scatter, vb_right, plot_ready
 
     if not pyqtgraph_available:
         print("plot window not available: pyqtgraph unavailable")
@@ -106,22 +111,49 @@ def init_plot_window():
             return
 
     try:
-        plot_window = plot_pg.plot(title="L vs Rp")
-        plot_window.setLabel('bottom', 'Rp (Ohms)')
-        plot_window.setLabel('left', 'Inductance (uH)')
+        # Create layout with two plots side by side
+        plot_layout = plot_pg.GraphicsLayoutWidget()
+        plot_layout.resize(1200, 600)
         
-        # Configure axes to show across full plot area
-        plot_item = plot_window.getPlotItem()
+        # Left plot: time series
+        plot_time = plot_layout.addPlot(row=0, col=0, title="Time Series")
+        plot_time.setLabel('bottom', 'Time')
+        plot_time.setLabel('left', 'Inductance (uH)')
+        plot_time.showAxis('right')
+        plot_time.getAxis('right').setLabel('Rp (Ohms)')
+        
+        # Create viewbox for right axis (Rp)
+        vb_right = plot_pg.ViewBox()
+        plot_time.scene().addItem(vb_right)
+        plot_time.getAxis('right').linkToView(vb_right)
+        vb_right.setXLink(plot_time)
+        
+        # Update viewbox on resize
+        def updateViews():
+            vb_right.setGeometry(plot_time.getViewBox().sceneBoundingRect())
+            vb_right.linkedViewChanged(plot_time.getViewBox(), vb_right.XAxis)
+        plot_time.getViewBox().sigResized.connect(updateViews)
+        
+        # Right plot: scatter
+        plot_scatter = plot_layout.addPlot(row=0, col=1, title="Phase Space")
+        plot_scatter.setLabel('bottom', 'Rp (Ohms)')
+        plot_scatter.setLabel('left', 'Inductance (uH)')
+        
+        # Configure scatter axes to show across full plot area
+        plot_item = plot_scatter
         plot_item.layout.setContentsMargins(50, 10, 10, 50)
-        
-        # Show spines on all sides so axes appear across full window
         plot_item.showAxis('top')
         plot_item.showAxis('right')
         
-        plot_curve = plot_window.plot([], [], pen=None, symbol=None)
-        plot_window.show()
+        # Create plot curves
+        plot_curve_time_l = plot_time.plot([], [], pen=plot_pg.mkPen('cyan', width=2))  # left axis for L
+        plot_curve_time_rp = plot_pg.PlotCurveItem([], [], pen=plot_pg.mkPen('yellow', width=2))  # right axis for Rp
+        vb_right.addItem(plot_curve_time_rp)
+        plot_curve_scatter = plot_scatter.plot([], [], pen=None, symbol='o', symbolPen=None, symbolBrush=None, symbolSize=5)
+        
+        plot_layout.show()
         plot_ready = True
-        print("plot window initialized successfully")
+        print("plot windows initialized successfully")
     except Exception as e:
         print(f"plot window setup failed: {e}")
         plot_ready = False
@@ -489,7 +521,7 @@ def main():
                         plot_rp = plot_rp[-10000:]
                     
                     # Compute moving average of last 20 points
-                    window = 20
+                    window = 50
                     smoothed_l = []
                     smoothed_rp = []
                     for i in range(len(plot_l)):
@@ -516,17 +548,32 @@ def main():
                             b = 0
                             colors.append((r, g, b, 200))
                     
-                    # Plot as scatter with gradient colors
-                    plot_curve.setData(smoothed_rp, smoothed_l, pen=None, symbol='o', symbolPen=None, symbolBrush=colors, symbolSize=5)
+                    # Time series data
+                    time_x = list(range(num_points))
                     
-                    # Update axis ranges to fit data
+                    # Update plots
+                    plot_curve_time_l.setData(time_x, smoothed_l)
+                    plot_curve_time_rp.setData(time_x, smoothed_rp)
+                    plot_curve_scatter.setData(smoothed_rp, smoothed_l, pen=None, symbol='o', symbolPen=None, symbolBrush=colors, symbolSize=5)
+                    
+                    # Update axis ranges
                     if num_points > 1:
+                        # Scatter plot ranges
                         x_min, x_max = min(smoothed_rp), max(smoothed_rp)
                         y_min, y_max = min(smoothed_l), max(smoothed_l)
                         x_pad = max(0.01, (x_max - x_min) * 0.05) if x_max > x_min else 0.5
                         y_pad = max(1, (y_max - y_min) * 0.05) if y_max > y_min else 50
-                        plot_window.setXRange(x_min - x_pad, x_max + x_pad)
-                        plot_window.setYRange(y_min - y_pad, y_max + y_pad)
+                        plot_scatter.setXRange(x_min - x_pad, x_max + x_pad)
+                        plot_scatter.setYRange(y_min - y_pad, y_max + y_pad)
+                        
+                        # Time series ranges - separate axes
+                        l_min, l_max = min(smoothed_l), max(smoothed_l)
+                        rp_min, rp_max = min(smoothed_rp), max(smoothed_rp)
+                        l_pad = max(0.01, (l_max - l_min) * 0.05) if l_max > l_min else 0.5
+                        rp_pad = max(1, (rp_max - rp_min) * 0.05) if rp_max > rp_min else 50
+                        plot_time.setYRange(l_min - l_pad, l_max + l_pad)
+                        vb_right.setYRange(rp_min - rp_pad, rp_max + rp_pad)
+                        plot_time.setXRange(0, num_points - 1)
                     
                     plot_QtGui.QApplication.processEvents()
 
