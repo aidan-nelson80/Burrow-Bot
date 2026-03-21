@@ -320,6 +320,7 @@ class JoystickControl:
         self.polarity = 1
         self.recording = False
         self.running = True
+        self.smoothing_window = 10
         
         # Recording objects
         self.h5_recorder = None
@@ -382,11 +383,21 @@ class JoystickControl:
             plot_l = []
             plot_rp = []
             print("\nPlot reset")
-        
-        # Menu - quit
+
+        # Left trigger - decrease smoothing window
         elif event.button == 6:
+            self.smoothing_window = max(1, self.smoothing_window - 1)
+            print(f"\nSmoothing window: {self.smoothing_window}")
+
+        # Right trigger - increase smoothing window
+        elif event.button == 7:
+            self.smoothing_window += 1
+            print(f"\nSmoothing window: {self.smoothing_window}")
+        # Back - quit
+        elif event.button == 8:
             self.running = False
-            print("\nQuitting...")
+            print("\nButton 8")
+        
     
     def start_recording(self):
         global video_out, current_video_path
