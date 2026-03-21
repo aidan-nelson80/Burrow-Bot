@@ -372,12 +372,12 @@ class JoystickControl:
         elif event.button == 2:
             # Place a label on the right plot at the most recent x-y coordinates
             self.material_label_count += 1
-            label_text = f"Material {self.material_label_count}"
+            label_text = f"Material\n {self.material_label_count}"
             # Place label at most recent point on scatter plot
             if plot_scatter is not None and len(plot_rp) > 0 and len(plot_l) > 0:
                 x = plot_rp[-1]
                 y = plot_l[-1]
-                label = plot_pg.TextItem(label_text, anchor=(0.5, 0.5), color=(0,0,0), fill=(255,255,255,180))
+                label = plot_pg.TextItem(label_text, anchor=(0.5, 0.5), color=(255,255,255), fill=(0,0,0,0))
                 label.setPos(x, y)
                 plot_scatter.addItem(label)
                 self.material_labels.append(label)
@@ -573,16 +573,16 @@ def main():
                         smoothed_l.append(avg_l)
                         smoothed_rp.append(avg_rp)
                     
-                    # Create color gradient from red (old) to orange, with last 50 points bright white
+                    # Create color gradient from red (old) to orange, with last 20 points bright white
                     num_points = len(smoothed_l)
                     colors = []
                     for i in range(num_points):
-                        if i >= num_points - 50:
-                            # Last 50 points: bright white
+                        if i >= num_points - 20:
+                            # Last 20 points: bright white
                             colors.append((255, 255, 255, 200))
                         else:
                             # Earlier points: gradient from red to orange
-                            progress = i / max(1, num_points - 51)
+                            progress = i / max(1, num_points - 21)
                             r = 255
                             g = int(165 * progress)
                             b = 0
@@ -602,7 +602,7 @@ def main():
                         x_min, x_max = min(smoothed_rp), max(smoothed_rp)
                         y_min, y_max = min(smoothed_l), max(smoothed_l)
                         x_pad = max(0.01, (x_max - x_min) * 0.01) if x_max > x_min else 0.1
-                        y_pad = max(1, (y_max - y_min) * 0.01) if y_max > y_min else 5
+                        y_pad = max(0.1, (y_max - y_min) * 0.002) if y_max > y_min else 0.5
                         plot_scatter.setXRange(x_min - x_pad, x_max + x_pad)
                         plot_scatter.setYRange(y_min - y_pad, y_max + y_pad)
                         
