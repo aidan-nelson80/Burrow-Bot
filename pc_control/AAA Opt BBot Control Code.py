@@ -321,6 +321,10 @@ class JoystickControl:
         self.recording = False
         self.running = True
         self.smoothing_window = 10
+
+        # For labeling materials on the scatter plot
+        self.material_label_count = 0
+        self.material_labels = []
         
         # Recording objects
         self.h5_recorder = None
@@ -352,7 +356,7 @@ class JoystickControl:
         return self.left_pwm, self.right_pwm
     
     def handle_button(self, event):
-        global video_out, current_video_path
+        global video_out, current_video_path, plot_l, plot_rp, plot_scatter, plot_pg, plot_time, vb_right
         
         # LB - decrease power
         if event.button == 4:
@@ -364,10 +368,22 @@ class JoystickControl:
             self.power = min(100, self.power + 10)
             print(f"\nPower: {self.power}%")
         
-        # B - reverse polarity
-        elif event.button == 1:
-            self.polarity *= -1
-            print(f"\nPolarity: {self.polarity}")
+        # B - place material marker
+        elif event.button == 2:
+            # Place a label on the right plot at the most recent x-y coordinates
+            self.material_label_count += 1
+            label_text = f"Material {self.material_label_count}"
+            # Place label at most recent point on scatter plot
+            if plot_scatter is not None and len(plot_rp) > 0 and len(plot_l) > 0:
+                x = plot_rp[-1]
+                y = plot_l[-1]
+                label = plot_pg.TextItem(label_text, anchor=(0.5, 0.5), color=(0,0,0), fill=(255,255,255,180))
+                label.setPos(x, y)
+                plot_scatter.addItem(label)
+                self.material_labels.append(label)
+                print(f"\nAdded label '{label_text}' at ({x:.2f}, {y:.2f})")
+            else:
+                print("\nNo data to label on scatter plot.")
         
         # A - toggle recording
         elif event.button == 3:
@@ -379,10 +395,21 @@ class JoystickControl:
 
         # X - reset the whole plot
         elif event.button == 0:
-            global plot_l, plot_rp
+            # Remove all material labels from scatter plot
+            for label in self.material_labels:
+                if plot_scatter is not None:
+                    plot_scatter.removeItem(label)
+            self.material_labels = []
+            self.material_label_count = 0
             plot_l = []
             plot_rp = []
-            print("\nPlot reset")
+            # Reset plot limits to default
+            if plot_time is not None:
+                plot_time.setXRange(0, 100)
+                plot_time.setYRange(0, 100)
+            if vb_right is not None:
+                vb_right.setYRange(0, 100)
+            print("\nPlot reset and limits reset")
 
         # Left trigger - decrease smoothing window
         elif event.button == 6:
@@ -393,6 +420,7 @@ class JoystickControl:
         elif event.button == 7:
             self.smoothing_window += 1
             print(f"\nSmoothing window: {self.smoothing_window}")
+
         # Back - quit
         elif event.button == 8:
             self.running = False
@@ -512,7 +540,7 @@ def main():
                 if joystick.recording and video_out is not None:
                     video_out.write(frame)
             
-            # ===== 4. Wait for and read IMU response =====
+            # ===== 4. Wait for and read LDC response =====
             timeout_ms = int(LOOP_INTERVAL * 1000 * 0.8)
             ldc_packet = serial_comm.read_ldc_packet(timeout_ms)
             
@@ -531,8 +559,9 @@ def main():
                         plot_l = plot_l[-10000:]
                         plot_rp = plot_rp[-10000:]
                     
-                    # Compute moving average of last 20 points
-                    window = 50
+                    # Compute moving average of last [window] points
+                    # Use smoothing_window from joystick
+                    window = getattr(joystick, 'smoothing_window', 25)
                     smoothed_l = []
                     smoothed_rp = []
                     for i in range(len(plot_l)):
@@ -572,16 +601,16 @@ def main():
                         # Scatter plot ranges
                         x_min, x_max = min(smoothed_rp), max(smoothed_rp)
                         y_min, y_max = min(smoothed_l), max(smoothed_l)
-                        x_pad = max(0.01, (x_max - x_min) * 0.05) if x_max > x_min else 0.5
-                        y_pad = max(1, (y_max - y_min) * 0.05) if y_max > y_min else 50
+                        x_pad = max(0.01, (x_max - x_min) * 0.01) if x_max > x_min else 0.1
+                        y_pad = max(1, (y_max - y_min) * 0.01) if y_max > y_min else 5
                         plot_scatter.setXRange(x_min - x_pad, x_max + x_pad)
                         plot_scatter.setYRange(y_min - y_pad, y_max + y_pad)
                         
                         # Time series ranges - separate axes
                         l_min, l_max = min(smoothed_l), max(smoothed_l)
                         rp_min, rp_max = min(smoothed_rp), max(smoothed_rp)
-                        l_pad = max(0.01, (l_max - l_min) * 0.05) if l_max > l_min else 0.5
-                        rp_pad = max(1, (rp_max - rp_min) * 0.05) if rp_max > rp_min else 50
+                        l_pad = max(0.01, (l_max - l_min) * 0.01) if l_max > l_min else 0.1
+                        rp_pad = max(1, (rp_max - rp_min) * 0.01) if rp_max > rp_min else 5
                         plot_time.setYRange(l_min - l_pad, l_max + l_pad)
                         vb_right.setYRange(rp_min - rp_pad, rp_max + rp_pad)
                         plot_time.setXRange(0, num_points - 1)
